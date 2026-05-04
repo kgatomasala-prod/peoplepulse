@@ -1,0 +1,859 @@
+// ============================================================
+// PeoplePulse — Prisma Schema
+// Multi-tenant HR & Payroll SaaS for Botswana SMEs
+// Financial Year: 1 July – 30 June | Currency: P | Dates: DD/MM/YYYY
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------
+// PLATFORM / SUPER ADMIN
+// ---------------------------------------------------------------
+
+model SuperAdmin {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("super_admins")
+}
+
+// ---------------------------------------------------------------
+// ORGANIZATIONS (TENANTS)
+// ---------------------------------------------------------------
+
+model Organization {
+  id              String   @id @default(cuid())
+  name            String
+  bursTin         String   @unique // BURS TIN
+  cipaReg         String?  // CIPA registration number
+  industry        String?
+  logoUrl         String?
+  address         String?
+  plan            OrganizationPlan @default(TRIAL)
+  trialEndsAt     DateTime?
+  monthlyBillingDay Int     @default(25)
+  financialYearStart DateTime @default(DateTime.parse("2025-07-01"))
+  turnover        Float    @default(0) // for SDL exempt check (< P250,000)
+  sdlExempt       Boolean  @default(false)
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Clerk org ID stored for integration
+  clerkOrgId      String?  @unique
+
+  // Relations
+  branches        Branch[]
+  employees       Employee[]
+  payComponents   PayComponent[]
+  payrollRuns     PayrollRun[]
+  leavePolicies  LeavePolicy[]
+  disciplinaryCases DisciplinaryCase[]
+  aiConversations AIConversation[]
+  subscriptions  Subscription[]
+  auditLogs       AuditLog[]
+  featureFlags   FeatureFlag[]
+
+  @@index([clerkOrgId])
+  @@map("organizations")
+}
+
+enum OrganizationPlan {
+  TRIAL
+  STARTER     // up to 10 employees — P299/mo
+  GROWTH      // up to 50 employees — P799/mo
+  BUSINESS    // up to 200 employees — P1,999/mo
+  ENTERPRISE  // 200+ / multi-branch — Custom
+}
+
+// ---------------------------------------------------------------
+// SUBSCRIPTIONS & BILLING
+// ---------------------------------------------------------------
+
+model Subscription {
+  id              String   @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan            OrganizationPlan
+  billingCycle    BillingCycle @default(MONTHLY)
+  amountBwp       Float
+  status          SubscriptionStatus @default(ACTIVE)
+  startsAt        DateTime
+  endsAt          DateTime?
+  cancelledAt     DateTime?
+  stripeSubId     String?  @unique
+  dpoPayRef       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([organizationId])
+  @@map("subscriptions")
+}
+
+enum BillingCycle {
+  MONTHLY
+  ANNUAL // 2 months free
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  GRACE_PERIOD  // 3-day grace after failed payment
+  READ_ONLY     // after grace period
+  SUSPENDED     // 14-day suspension before deletion
+  CANCELLED
+}
+
+// ---------------------------------------------------------------
+// BRANCHES
+// ---------------------------------------------------------------
+
+model Branch {
+  id              String   @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name            String
+  address         String?
+  managerId       String?  // FK to Employee who is branch manager
+  costCentre      String?  // for cost allocation
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  employees       Employee[]
+  departments     Department[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("branches")
+}
+
+// ---------------------------------------------------------------
+// DEPARTMENTS
+// ---------------------------------------------------------------
+
+model Department {
+  id              String   @id @default(cuid())
+  organizationId  String
+  branchId        String
+  branch          Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  name            String
+  costCentre      String?
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  employees       Employee[]
+
+  @@unique([branchId, name])
+  @@index([organizationId])
+  @@map("departments")
+}
+
+// ---------------------------------------------------------------
+// EMPLOYEES
+// ---------------------------------------------------------------
+
+model Employee {
+  id                  String   @id @default(cuid())
+  organizationId      String
+  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branchId            String?
+  branch              Branch? @relation(fields: [branchId], references: [id])
+  departmentId        String?
+  department          Department? @relation(fields: [departmentId], references: [id])
+
+  employeeNumber      String   // company-specific e.g. "EMP-0042"
+  firstName           String
+  lastName            String
+  fullName            String   // computed: firstName + lastName
+
+  // Personal
+  dateOfBirth         DateTime
+  gender              Gender?
+  nationality         String   @default("Motswana")
+  omang               String?  @unique // national ID — must be unique
+  passportNumber      String?
+  maritalStatus       MaritalStatus?
+  address             String?
+  phone               String?
+  email               String?
+  emergencyContactName  String?
+  emergencyContactPhone String?
+
+  // Employment
+  employmentType      EmploymentType
+  jobTitle            String?
+  startDate           DateTime
+  endDate             DateTime?
+  probationEndDate   DateTime?
+  managerId           String?  // self-referential FK to Employee (line manager)
+  manager             Employee?  @relation("ManagerReports", fields: [managerId], references: [id])
+  directReports       Employee[] @relation("ManagerReports")
+  status              EmployeeStatus @default(ACTIVE)
+
+  // Compensation
+  basicSalary         Float
+  bankName            BankName?
+  bankAccountNumber  String?
+  bankAccountHolder  String?
+
+  // Tax
+  taxStatus           TaxStatus @default(RESIDENT)
+  bursTpn            String?  // BURS Tax Payer Number
+  pensionMembershipNumber String?
+  pensionContributionRate Float @default(5) // % of gross, default 5%
+
+  // Documents
+  contractUrl        String?  // Supabase Storage URL
+  omangCopyUrl       String?
+  workPermitNumber   String?
+  workPermitExpiry   DateTime?
+  qualificationsUrl String?
+
+  // Alerts tracking (timestamps for expiry notifications)
+  contractExpiryAlertedAt DateTime?
+  workPermitExpiryAlertedAt DateTime?
+  probationEndAlertedAt    DateTime?
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  // Relations
+  payComponentAssignments PayComponentAssignment[]
+  payrollLines       PayrollLine[]
+  leaveBalances      LeaveBalance[]
+  leaveRequests      LeaveRequest[]  @relation("LeaveRequestEmployee")
+  approvedLeaveRequests LeaveRequest[] @relation("LeaveRequestApprover")
+  disciplinaryCases  DisciplinaryCase[] @relation("DisciplinaryCaseEmployee")
+  performanceReviews PerformanceReview[]
+  overtimeRequests   OvertimeRequest[]
+
+  @@unique([organizationId, employeeNumber])
+  @@unique([omang])
+  @@index([organizationId])
+  @@index([branchId])
+  @@index([departmentId])
+  @@index([status])
+  @@map("employees")
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum MaritalStatus {
+  SINGLE
+  MARRIED
+  DIVORCED
+  WIDOWED
+  SEPARATED
+}
+
+enum EmploymentType {
+  PERMANENT
+  FIXED_TERM
+  CASUAL
+  PART_TIME
+  PROBATIONARY
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  ON_LEAVE
+  SUSPENDED
+  TERMINATED
+  RESIGNED
+}
+
+enum TaxStatus {
+  RESIDENT
+  NON_RESIDENT
+}
+
+enum BankName {
+  BANCABC
+  FNB
+  STANDARD_CHARTERED
+  STANBIC
+  CAPITEC
+  NATIONAL_BANK
+}
+
+// ---------------------------------------------------------------
+// PAY COMPONENTS
+// ---------------------------------------------------------------
+
+model PayComponent {
+  id                  String   @id @default(cuid())
+  organizationId      String
+  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name                String   // e.g. "Housing Allowance", "Pension"
+  type                PayComponentType
+  isTaxable           Boolean  @default(true)
+  isStatutory         Boolean  @default(false) // e.g. PAYE, SDL, workers comp
+  isPreTaxDeduction   Boolean  @default(false) // pension, medical aid
+  isEmployerContribution Boolean @default(false)
+  calculationType     CalculationType @default(FIXED_AMOUNT)
+  defaultAmount       Float?
+  defaultPercentage   Float?
+  active              Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  assignments        PayComponentAssignment[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("pay_components")
+}
+
+enum PayComponentType {
+  EARNING          // basic, overtime, bonus, allowances
+  DEDUCTION        // post-tax deductions
+  PRE_TAX_DEDUCTION // pension, medical aid (reduces taxable income)
+  EMPLOYER_CONTRIBUTION // employer pension, SDL, workers comp
+}
+
+enum CalculationType {
+  FIXED_AMOUNT
+  PERCENTAGE_OF_BASIC
+  PERCENTAGE_OF_GROSS
+}
+
+// Per-employee pay component assignment
+model PayComponentAssignment {
+  id              String   @id @default(cuid())
+  employeeId      String
+  employee        Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  payComponentId  String
+  payComponent    PayComponent @relation(fields: [payComponentId], references: [id])
+  amount          Float
+  percentage      Float?   // if calculationType is percentage
+  isActive       Boolean  @default(true)
+  effectiveFrom  DateTime @default(now())
+  effectiveTo    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([employeeId, payComponentId, effectiveFrom])
+  @@index([employeeId])
+  @@map("pay_component_assignments")
+}
+
+// ---------------------------------------------------------------
+// PAYROLL RUNS
+// ---------------------------------------------------------------
+
+model PayrollRun {
+  id              String   @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  periodMonth     Int      // 1–12
+  periodYear      Int
+  status          PayrollRunStatus @default(DRAFT)
+  approvedBy      String?  // user ID who approved
+  approvedAt      DateTime?
+  notes           String?
+  totalGross      Float    @default(0)
+  totalNet        Float    @default(0)
+  totalPaye       Float    @default(0)
+  totalSdl        Float    @default(0)
+  reversalOfId    String?  // FK to PayrollRun that this reverses
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  lines           PayrollLine[]
+
+  // Ensure one run per org per month/year
+  @@unique([organizationId, periodMonth, periodYear])
+  @@index([organizationId])
+  @@index([periodMonth, periodYear])
+  @@map("payroll_runs")
+}
+
+enum PayrollRunStatus {
+  DRAFT
+  CALCULATED
+  REVIEW
+  APPROVED
+  LOCKED   // immutable after approval
+  REVERSED
+}
+
+// Per-employee payroll line
+model PayrollLine {
+  id              String   @id @default(cuid())
+  runId           String
+  run             PayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  employeeId      String
+  employee        Employee @relation(fields: [employeeId], references: [id])
+
+  // Earnings breakdown
+  basicSalary     Float
+  totalAllowances Float    @default(0)
+  overtimePay     Float    @default(0)
+  bonusPay        Float    @default(0)
+  grossPay        Float    // basic + allowances + overtime + bonus
+
+  // Deductions breakdown
+  preTaxPension   Float    @default(0) // reduces taxable income
+  preTaxMedicalAid Float   @default(0) // reduces taxable income
+  taxableIncome   Float    // gross - pre-tax deductions
+  paye            Float    // PAYE tax
+  sdl             Float    @default(0) // Skills Development Levy 0.2%
+  postTaxDeductions Float  @default(0)
+  totalDeductions Float    @default(0)
+  netPay          Float    // gross - all deductions
+
+  // Employer costs
+  employerPension Float   @default(0)
+  employerCost    Float   // net + employer pension + SDL
+
+  // YTD tracking
+  ytdGross        Float   @default(0)
+  ytdPaye         Float   @default(0)
+  ytdNet          Float   @default(0)
+
+  // Special calculations triggered
+  severancePay    Float   @default(0)
+  severanceTaxExempt Float @default(0)
+  leaveEncashment  Float  @default(0)
+  proRataPay       Float  @default(0)
+  gratuityPay      Float  @default(0)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([runId])
+  @@index([employeeId])
+  @@map("payroll_lines")
+}
+
+// ---------------------------------------------------------------
+// LEAVE MANAGEMENT
+// ---------------------------------------------------------------
+
+model LeavePolicy {
+  id              String   @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  type            LeaveType
+  daysPerYear     Float
+  carryOverMax    Float    @default(0)
+  isStatutory     Boolean  @default(false) // non-editable minimums
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  balances        LeaveBalance[]
+  requests        LeaveRequest[]
+
+  @@unique([organizationId, type])
+  @@index([organizationId])
+  @@map("leave_policies")
+}
+
+enum LeaveType {
+  ANNUAL
+  SICK
+  MATERNITY
+  PATERNITY
+  COMPASSIONATE
+  STUDY
+  UNPAID
+}
+
+// Per-employee leave balance
+model LeaveBalance {
+  id              String   @id @default(cuid())
+  employeeId      String
+  employee        Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  policyId        String
+  policy          LeavePolicy @relation(fields: [policyId], references: [id])
+  accrued         Float    @default(0)
+  used            Float    @default(0)
+  carriedOver     Float    @default(0)
+  remaining       Float    @default(0) // computed: accrued + carriedOver - used
+  asAtDate        DateTime @default(now()) // balance as of this date
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([employeeId, policyId])
+  @@index([employeeId])
+  @@map("leave_balances")
+}
+
+// Leave request with approval workflow
+model LeaveRequest {
+  id              String   @id @default(cuid())
+  employeeId      String
+  employee        Employee @relation("LeaveRequestEmployee", fields: [employeeId], references: [id], onDelete: Cascade)
+  policyId        String
+  policy          LeavePolicy @relation(fields: [policyId], references: [id])
+  startDate       DateTime
+  endDate         DateTime
+  daysRequested   Float
+  reason          String?
+  status          LeaveRequestStatus @default(PENDING)
+  approvedBy      String?  // employee ID
+  approvedAt      DateTime?
+  declinedBy      String?
+  declinedAt      DateTime?
+  declineReason   String?
+  HRConfirmedBy   String?
+  HRConfirmedAt   DateTime?
+  isOverride      Boolean  @default(false) // admin override to allow negative balance
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Use computed properties instead of relations
+  // approvals       LeaveApproval[]
+  // documents       LeaveDocument[]
+
+  @@index([employeeId])
+  @@index([policyId])
+  @@index([status])
+  @@map("leave_requests")
+}
+
+enum LeaveRequestStatus {
+  PENDING       // employee submitted
+  MANAGER_APPROVED // line manager approved, awaiting HR
+  HR_CONFIRMED  // HR has confirmed
+  APPROVED      // fully approved
+  DECLINED
+  CANCELLED
+}
+
+// Public holidays (pre-loaded for Botswana, manageable by Super Admin)
+model PublicHoliday {
+  id              String   @id @default(cuid())
+  countryCode      String   @default("BW")
+  name            String
+  date            DateTime
+  applicableRegions String[] // provinces/states if needed
+  active          Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([countryCode, date])
+  @@map("public_holidays")
+}
+
+// Overtime requests
+model OvertimeRequest {
+  id              String   @id @default(cuid())
+  employeeId      String
+  employee        Employee @relation(fields: [employeeId], references: [id])
+  requestDate     DateTime
+  hours           Float
+  rate            Float    @default(1.5) // multiplier
+  reason          String?
+  status          OvertimeStatus @default(PENDING)
+  approvedBy      String?
+  approvedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([employeeId])
+  @@map("overtime_requests")
+}
+
+enum OvertimeStatus {
+  PENDING
+  APPROVED
+  DECLINED
+  PAID
+}
+
+// ---------------------------------------------------------------
+// DISCIPLINARY & PERFORMANCE
+// ---------------------------------------------------------------
+
+model DisciplinaryCase {
+  id                String   @id @default(cuid())
+  organizationId     String
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  employeeId        String
+  employee          Employee @relation("DisciplinaryCaseEmployee", fields: [employeeId], references: [id])
+  incidentDate      DateTime
+  incidentDescription String
+  witnessNames      String?
+  evidenceUrls      String[] // Supabase Storage URLs
+  caseType          DisciplinaryCaseType
+  status            DisciplinaryStatus @default(OPEN)
+  hearingDate       DateTime?
+  hearingVenue      String?
+  hearingInviteSentAt DateTime?
+  hearingOutcome   String?
+  sanction          SanctionType?
+  sanctionLetterSentAt DateTime?
+  acknowledgedAt   DateTime?
+  employeeResponse String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([organizationId])
+  @@index([employeeId])
+  @@index([status])
+  @@map("disciplinary_cases")
+}
+
+enum DisciplinaryCaseType {
+  MISCONDUCT
+  POOR_PERFORMANCE
+  DISCIPLINARY
+  GRIEVANCE
+}
+
+enum DisciplinaryStatus {
+  OPEN
+  HEARING_SCHEDULED
+  HEARING_HELD
+  CLOSED
+}
+
+enum SanctionType {
+  VERBAL_WARNING
+  FIRST_WRITTEN_WARNING
+  FINAL_WRITTEN_WARNING
+  SUSPENSION
+  DEMOTION
+  DISMISSAL
+}
+
+model PerformanceReview {
+  id              String   @id @default(cuid())
+  employeeId      String
+  employee        Employee @relation(fields: [employeeId], references: [id])
+  reviewPeriod    String   // e.g. "2025-H1", "Annual 2025"
+  reviewDate     DateTime
+  managerId      String   // employee ID of reviewing manager
+  status         ReviewStatus @default(DRAFT)
+  overallRating  ReviewRating?
+  kpis            Jsonb    // array of { name, target, actual, rating, comments }
+  managerComments String?
+  employeeComments String?
+  managerSignedAt DateTime?
+  employeeSignedAt DateTime?
+  salaryReviewNotes String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([employeeId])
+  @@map("performance_reviews")
+}
+
+enum ReviewStatus {
+  DRAFT
+  MANAGER_REVIEW
+  EMPLOYEE_REVIEW
+  SIGNED_OFF
+}
+
+enum ReviewRating {
+  1 // Needs Improvement
+  2 // Meets Some Expectations
+  3 // Meets Expectations
+  4 // Exceeds Expectations
+  5 // Outstanding
+}
+
+// ---------------------------------------------------------------
+// AI HR ASSISTANT
+// ---------------------------------------------------------------
+
+model AIConversation {
+  id              String   @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId          String   // Clerk user ID
+  employeeId      String?  // context: if AI is reviewing a specific employee
+  messages        Jsonb    // array of { role: "user"|"assistant", content: string, ts: DateTime }
+  tokenUsage      Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([organizationId])
+  @@index([userId])
+  @@map("ai_conversations")
+}
+
+// ---------------------------------------------------------------
+// COUNTRIES & TAX BANDS (Multi-country ready — Phase 2+)
+// ---------------------------------------------------------------
+
+model Country {
+  id                    String   @id @default(cuid())
+  code                  String   @unique // "BW", "ZA", "ZM", "ZW", "NA"
+  name                  String
+  currencyCode          String   @default("BWP")
+  payeTable             Jsonb?   // embedded tax bands (backup)
+  financialYearStart    String   @default("07-01") // MM-DD
+  minWagePerHour        Float    @default(7.34) // P7.34/hr Botswana minimum
+  leaveDefaults         Jsonb?   // { annual: 15, sick: 14, maternity: 98, paternity: 3 }
+  active                Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  taxBands              TaxBand[]
+
+  @@map("countries")
+}
+
+// Updateable without code deployment
+model TaxBand {
+  id                  String   @id @default(cuid())
+  countryId           String
+  country             Country @relation(fields: [countryId], references: [id])
+  taxYear             Int
+  residentStatus      ResidentStatus
+  bandMin             Float
+  bandMax             Float?
+  ratePercent         Float
+  cumulativeTaxBelow  Float    @default(0)
+  active              Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([countryId, taxYear, residentStatus, bandMin])
+  @@index([countryId, taxYear])
+  @@map("tax_bands")
+}
+
+enum ResidentStatus {
+  RESIDENT
+  NON_RESIDENT
+}
+
+// ---------------------------------------------------------------
+// AUDIT LOG (Cross-tenant for Super Admin)
+// ---------------------------------------------------------------
+
+model AuditLog {
+  id              String   @id @default(cuid())
+  organizationId  String?
+  organization    Organization? @relation(fields: [organizationId], references: [id])
+  userId          String   // Clerk user ID
+  userEmail       String
+  action          String   // e.g. "PAYROLL_APPROVED", "EMPLOYEE_CREATED"
+  entityType      String   // e.g. "PayrollRun", "Employee"
+  entityId        String
+  changes         Jsonb?   // { before: {}, after: {} }
+  ipAddress       String?
+  userAgent       String?
+  createdAt       DateTime @default(now())
+
+  @@index([organizationId])
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------
+// FEATURE FLAGS (per tenant)
+// ---------------------------------------------------------------
+
+model FeatureFlag {
+  id              String   @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  feature         String   // e.g. "AI_ASSISTANT", "ADVANCED_REPORTS"
+  enabled         Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([organizationId, feature])
+  @@index([organizationId])
+  @@map("feature_flags")
+}
+
+// ---------------------------------------------------------------
+// COUPONS & DISCOUNTS
+// ---------------------------------------------------------------
+
+model Coupon {
+  id              String   @id @default(cuid())
+  code            String   @unique
+  discountType    DiscountType
+  discountValue   Float
+  maxUses         Int?
+  usedCount       Int      @default(0)
+  validFrom       DateTime
+  validTo         DateTime
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("coupons")
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+// ---------------------------------------------------------------
+// ANNOUNCEMENTS (Company-wide)
+// ---------------------------------------------------------------
+
+model Announcement {
+  id              String   @id @default(cuid())
+  organizationId  String
+  title           String
+  content         String
+  publishedAt     DateTime?
+  expiresAt       DateTime?
+  createdBy       String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([organizationId])
+  @@map("announcements")
+}
+
+// ---------------------------------------------------------------
+// ALERTS & NOTIFICATIONS
+// ---------------------------------------------------------------
+
+model Alert {
+  id              String   @id @default(cuid())
+  organizationId  String
+  employeeId      String?  // nullable — org-level if null
+  type            AlertType
+  title           String
+  message         String
+  dueDate         DateTime?
+  acknowledgedAt  DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([organizationId])
+  @@index([employeeId])
+  @@index([type])
+  @@map("alerts")
+}
+
+enum AlertType {
+  WORK_PERMIT_EXPIRY    // 30/14/7 day alerts
+  CONTRACT_EXPIRY
+  PROBATION_END
+  ITW7_DUE             // monthly 10th reminder
+  ITW10_DUE            // 30 and 7 days before 31 July
+  FIXED_TERM_EXPIRY
+  LEAVE_NOT_TAKEN       // statutory minimum not taken
+  MISSING_BURS_TPN
+}
