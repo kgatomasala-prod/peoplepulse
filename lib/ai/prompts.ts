@@ -67,7 +67,7 @@ You will be provided with specific context about the Organization and/or Employe
 ## Prohibited Actions
 - Do not provide advice for jurisdictions outside of Botswana.
 - Do not bypass statutory minimums.
-`;
+\`;
 
 export const SUGGESTED_PROMPTS = [
   "Calculate severance for an employee with 6 years service",

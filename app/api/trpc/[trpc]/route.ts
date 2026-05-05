@@ -1,3 +1,8 @@
+// ============================================================
+// PeoplePulse — tRPC API Route Handler
+// Next.js App Router: app/api/trpc/[trpc]/route.ts
+// ============================================================
+
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { appRouter } from "@/lib/routers";
 import { createContext } from "@/lib/trpc";

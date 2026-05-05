@@ -1,50 +1,91 @@
-import { NextResponse } from "next/server";
+// ============================================================
+// PeoplePulse — Clerk Webhook Handler
+// Handles org creation, user invitation, role assignment
+// ============================================================
+
+import { NextRequest, NextResponse } from "next/server";
+import { clerkClient, type WebhookEvent } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
-import { headers } from "next/headers";
 
-export async function POST(req: Request) {
+// Disable body parsing — we need the raw body for webhook signature
+export const config = {
+  api: { bodyParser: false },
+};
+
+export async function POST(req: NextRequest) {
+  const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
+  if (!WEBHOOK_SECRET) {
+    return NextResponse.json({ error: "Missing CLERK_WEBHOOK_SECRET" }, { status: 500 });
+  }
+
   const body = await req.text();
-  const headersList = await headers();
-  const sig = headersList.get("clerk-signature") ?? "";
+  const signature = req.headers.get("clerk-webhook-signature") ?? "";
 
-  // TODO: verify webhook signature with svix in production
-  const event = JSON.parse(body) as { type: string; data: Record<string, unknown> };
+  // Verify signature (simplified — use actual Clerk verification in prod)
+  // const isValid = verifyWebhookSignature(body, signature, WEBHOOK_SECRET);
 
-  switch (event.type) {
-    case "organization.created": {
-      const { id: clerkOrgId, name } = event.data as { id: string; name: string };
-      const existing = await prisma.organization.findUnique({ where: { clerkOrgId } });
-      if (existing) return NextResponse.json({ ok: true });
+  let evt: WebhookEvent;
+  try {
+    evt = JSON.parse(body) as WebhookEvent;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
 
-      const trialEndsAt = new Date();
-      trialEndsAt.setDate(trialEndsAt.getDate() + 30);
-
-      const org = await prisma.organization.create({
-        data: { clerkOrgId, name, plan: "TRIAL", trialEndsAt },
-      });
-
-      // Seed statutory leave policies
-      const statutoryPolicies = [
-        { type: "ANNUAL", daysPerYear: 15, isStatutory: true },
-        { type: "SICK", daysPerYear: 14, isStatutory: true },
-        { type: "MATERNITY", daysPerYear: 98, isStatutory: true },
-        { type: "PATERNITY", daysPerYear: 3, isStatutory: true },
-      ];
-      for (const p of statutoryPolicies) {
-        await prisma.leavePolicy.upsert({
-          where: { organizationId_type: { organizationId: org.id, type: p.type } },
-          create: { organizationId: org.id, ...p },
-          update: { isStatutory: true },
+  try {
+    switch (evt.type) {
+      case "organization.created": {
+        const org = evt.data;
+        await prisma.organization.create({
+          data: {
+            clerkOrgId: org.id,
+            name: org.name,
+            // Default to trial, admin will update via onboarding wizard
+            plan: "TRIAL",
+            trialEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+          },
         });
+
+        // Seed default leave policies for Botswana statutory minimums
+        const dbOrg = await prisma.organization.findUnique({ where: { clerkOrgId: org.id } });
+        if (dbOrg) {
+          await prisma.leavePolicy.createMany({
+            data: [
+              { organizationId: dbOrg.id, type: "ANNUAL", daysPerYear: 15, carryOverMax: 5, isStatutory: true },
+              { organizationId: dbOrg.id, type: "SICK", daysPerYear: 14, carryOverMax: 0, isStatutory: true },
+              { organizationId: dbOrg.id, type: "MATERNITY", daysPerYear: 98, carryOverMax: 0, isStatutory: true }, // 14 weeks
+              { organizationId: dbOrg.id, type: "PATERNITY", daysPerYear: 3, carryOverMax: 0, isStatutory: true },
+            ],
+          });
+        }
+        break;
       }
-      return NextResponse.json({ ok: true, orgCreated: true });
+
+      case "organizationMembership.created": {
+        const membership = evt.data;
+        // Map Clerk role to app role in public metadata
+        const clerkRole = membership.role; // "admin" | "member" | "guest"
+        let appRole = "employee";
+        if (clerkRole === "admin") {
+          appRole = "company_admin";
+        }
+        
+        const clerk = await clerkClient();
+        await clerk.organizations.updateOrganizationMetadata(membership.organizationId, {
+          publicMetadata: { appRole },
+        });
+        break;
+      }
+
+      case "user.created": {
+        const user = evt.data;
+        // Could create a user profile here if needed
+        break;
+      }
     }
-    case "organization.updated": {
-      const { id: clerkOrgId, name } = event.data as { id: string; name: string };
-      await prisma.organization.updateMany({ where: { clerkOrgId }, data: { name } });
-      return NextResponse.json({ ok: true });
-    }
-    default:
-      return NextResponse.json({ ok: true });
+
+    return NextResponse.json({ received: true });
+  } catch (err) {
+    console.error("Clerk webhook error:", err);
+    return NextResponse.json({ error: "Webhook processing failed" }, { status: 500 });
   }
 }
