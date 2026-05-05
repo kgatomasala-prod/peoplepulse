@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "framework": "nextjs",
+  "buildCommand": "prisma generate && next build",
+  "installCommand": "npm install --legacy-peer-deps",
+  "env": {
+    "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY": "@clerk_publishable_key",
+    "CLERK_SECRET_KEY": "@clerk_secret_key",
+    "DATABASE_URL": "@database_url",
+    "CLAUDE_API_KEY": "@claude_api_key",
+    "RESEND_API_KEY": "@resend_api_key",
+    "AFRICASTALKING_USERNAME": "@africastalking_username",
+    "AFRICASTALKING_API_KEY": "@africastalking_api_key",
+    "DPO_PAY_TOKEN": "@dpo_pay_token",
+    "STRIPE_SECRET_KEY": "@stripe_secret_key",
+    "STRIPE_WEBHOOK_SECRET": "@stripe_webhook_secret"
+  }
+}
