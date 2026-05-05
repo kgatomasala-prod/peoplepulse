@@ -10,6 +10,7 @@ import { leaveRouter } from "./leave";
 import { complianceRouter } from "./compliance";
 import { disciplinaryRouter } from "./disciplinary";
 import { superAdminRouter } from "./superAdmin";
+import { aiRouter } from "./ai";
 
 export const appRouter = router({
   payroll: payrollRouter,
@@ -18,6 +19,7 @@ export const appRouter = router({
   compliance: complianceRouter,
   disciplinary: disciplinaryRouter,
   superAdmin: superAdminRouter,
+  ai: aiRouter,
 });
 
 export type AppRouter = typeof appRouter;
