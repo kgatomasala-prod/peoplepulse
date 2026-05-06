@@ -644,7 +644,7 @@ model PerformanceReview {
   managerId      String   // employee ID of reviewing manager
   status         ReviewStatus @default(DRAFT)
   overallRating  ReviewRating?
-  kpis            Jsonb    // array of { name, target, actual, rating, comments }
+  kpis            Json    // array of { name, target, actual, rating, comments }
   managerComments String?
   employeeComments String?
   managerSignedAt DateTime?
@@ -682,7 +682,7 @@ model AIConversation {
   organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   userId          String   // Clerk user ID
   employeeId      String?  // context: if AI is reviewing a specific employee
-  messages        Jsonb    // array of { role: "user"|"assistant", content: string, ts: DateTime }
+  messages        Json    // array of { role: "user"|"assistant", content: string, ts: DateTime }
   tokenUsage      Int      @default(0)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -701,10 +701,10 @@ model Country {
   code                  String   @unique // "BW", "ZA", "ZM", "ZW", "NA"
   name                  String
   currencyCode          String   @default("BWP")
-  payeTable             Jsonb?   // embedded tax bands (backup)
+  payeTable             Json?   // embedded tax bands (backup)
   financialYearStart    String   @default("07-01") // MM-DD
   minWagePerHour        Float    @default(7.34) // P7.34/hr Botswana minimum
-  leaveDefaults         Jsonb?   // { annual: 15, sick: 14, maternity: 98, paternity: 3 }
+  leaveDefaults         Json?   // { annual: 15, sick: 14, maternity: 98, paternity: 3 }
   active                Boolean  @default(true)
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
@@ -752,7 +752,7 @@ model AuditLog {
   action          String   // e.g. "PAYROLL_APPROVED", "EMPLOYEE_CREATED"
   entityType      String   // e.g. "PayrollRun", "Employee"
   entityId        String
-  changes         Jsonb?   // { before: {}, after: {} }
+  changes         Json?   // { before: {}, after: {} }
   ipAddress       String?
   userAgent       String?
   createdAt       DateTime @default(now())
